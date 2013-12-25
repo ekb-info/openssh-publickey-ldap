@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+
+# Author:  Andrey Volkov <volkov.am@ekb-info.ru>
+# Version: 0.1.0 (2013-12-15)
+
+USER_NAME="${1}"
+CONF_FILE=/etc/ssh/publickey-ldap-helper.conf
+
+
+# Send all messages to syslog and preserve original fd's
+exec 3>&1 4>&2 > >(logger -t ${0##*/}[$$] -p auth.info) 2> >(logger -t ${0##*/}[$$] -p auth.error)
+
+
+# Print error end exit (<message>, [exitcode])
+exit_error() {
+  echo "ERROR: ${1}" >&2
+  exit "${2:-1}"
+}
+
+
+# Config file loader (<filename>, supported param <1> [2 3 .. N])
+load_config_file() {
+  local FILE_NAME="${1}"
+  shift
+  local VARS=" ${*} "
+  
+  # Check config
+  [ -r "${FILE_NAME}" ] || exit_error "${FILE_NAME} is not accessible"
+
+  local LINE LN=1
+  while read LINE; do
+    [ -z "${LINE}" -o "${LINE#\#}" != "${LINE}" ] && continue
+    [ "${VARS/ ${LINE%% *} /}" = "${VARS}" ] && exit_error "${FILE_NAME}:${LN}: Unknown option: ${LINE}"
+    eval config_${LINE%% *}='${LINE#* }' || exit_error "${FILE_NAME}:${LN}: Unable to evaluate: ${LINE}"
+    : $((LN++))
+  done < "${FILE_NAME}"
+}
+
+
+# Check user name
+[ -n "${USER_NAME}" ] || exit_error "User name is empty"
+
+# Check user exists
+getent passwd "${USER_NAME}" >/dev/null || exit_error "User ${USER_NAME} not found"
+
+# Load config file
+load_config_file "${CONF_FILE}" uri binddn bindpw account_base server_group account_filter pubkey_attr tls_checkpeer tls_cacertfile tls_ciphers \
+      || exit_error "Failed to load ${CONF_FILE}"
+
+# Check configuration parameters
+[ -n "${config_uri}" ] || exit_error "uri is not configered or set to empty"
+[ -n "${config_binddn}" -a -z "${config_bindpw}" ] && exit_error "binddn is configered but bindpw is not configured or empty"
+[ -z "${config_binddn}" -a -n "${config_bindpw}" ] && exit_error "bindpw is configered but binddn is not configered or empty"
+[ -n "${config_account_base}" ] || exit_error "account_base is not configered or empty"
+
+# Set defaults for empty configuration parameters
+: ${config_account_filter:="objectClass=posixAccount"}
+: ${config_pubkey_attr:=sshPublicKey}
+
+# Check config_server_group members
+if [ -n "${config_server_group}" ]; then
+  SERVER_GROUP=$(getent group "${config_server_group}") || exit_error "Server group ${config_server_group} not found"
+  SERVER_GROUP_MEMBERS=",${SERVER_GROUP##*:},"
+  [ "${SERVER_GROUP_MEMBERS/,${USER_NAME},/}" = "${SERVER_GROUP_MEMBERS}" ] && exit_error "User ${USER_NAME} is not belong to ${config_server_group}"
+fi
+
+# Find public keys
+PUB_KEYS=$(echo -n "${config_bindpw}" | env \
+  ${config_tls_checkpeer:+LDAPTLS_REQCERT=${config_tls_checkpeer}} \
+  ${config_tls_cacertfile:+LDAPTLS_CACERT=${config_tls_cacertfile}} \
+  ${config_tls_ciphers:+LDAPCIPHER_SUITE=${config_tls_ciphers}} \
+  ldapsearch -o ldif-wrap=no -LLL -x \
+  -H "${config_uri}" \
+  ${config_binddn:+-D ${config_binddn}} \
+  ${config_bindpw:+-y /dev/stdin} \
+  -b "${config_account_base}" \
+  "(&(${config_account_filter})(uid=${USER_NAME}))" ${config_pubkey_attr} || exit_error "Ldap public keys lookup failed")
+
+# Restore original fd's
+exec >&3 2>&4 3>&- 4>&-
+
+echo "${PUB_KEYS}" | sed -n "s,^${config_pubkey_attr}: \(.*\)$,\1,p"
