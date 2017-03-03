@@ -44,7 +44,7 @@ load_config_file() {
 getent passwd "${USER_NAME}" >/dev/null || exit_error "User ${USER_NAME} not found"
 
 # Load config file
-load_config_file "${CONF_FILE}" uri binddn bindpw account_base server_group account_filter pubkey_attr tls_checkpeer tls_cacertfile tls_ciphers \
+load_config_file "${CONF_FILE}" uri binddn bindpw account_base server_group account_filter pubkey_attr tls_checkpeer tls_cacertfile tls_ciphers nettimeout \
       || exit_error "Failed to load ${CONF_FILE}"
 
 # Check configuration parameters
@@ -69,7 +69,7 @@ PUB_KEYS=$(echo -n "${config_bindpw}" | env \
   ${config_tls_checkpeer:+LDAPTLS_REQCERT=${config_tls_checkpeer}} \
   ${config_tls_cacertfile:+LDAPTLS_CACERT=${config_tls_cacertfile}} \
   ${config_tls_ciphers:+LDAPCIPHER_SUITE=${config_tls_ciphers}} \
-  ldapsearch -o ldif-wrap=no -LLL -x \
+  ldapsearch -o nettimeout=${config_nettimeout} -o ldif-wrap=no -LLL -x \
   -H "${config_uri}" \
   ${config_binddn:+-D ${config_binddn}} \
   ${config_bindpw:+-y /dev/stdin} \
